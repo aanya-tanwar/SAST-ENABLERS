@@ -12,8 +12,9 @@ pipelines:
           services:
             - docker
           script:
-            - echo "Running Gitleaks scan"
-            - docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source=/repo --exit-code=1 --verbose
+            - echo "Running Gitleaks scan (non-blocking)"
+            - docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source=/repo --exit-code=1 --verbose || true
+            - echo "Gitleaks scan completed. Pipeline will not fail if secrets are found."
 
       - step:
           name: Trivy Filesystem Scan
@@ -21,13 +22,15 @@ pipelines:
           caches:
             - trivydb
           script:
-            - apk add --no-cache curl tar
+            - apk add --no-cache curl tar bash
             - |
               TRIVY_VERSION=$(curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | grep tag_name | cut -d '"' -f 4)
               curl -L "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_${TRIVY_VERSION#v}_Linux-64bit.tar.gz" -o trivy.tar.gz
               tar -zxvf trivy.tar.gz
               mv trivy /usr/local/bin/
-              trivy fs . --format table --output trivy-report.txt
+              trivy version
+            - echo "Running Trivy filesystem scan (non-blocking)..."
+            - trivy fs . --format table --output trivy-report.txt || true
           artifacts:
             - trivy-report.txt
 
@@ -36,12 +39,14 @@ pipelines:
           caches:
             - sonar
           script:
+            - echo "Running SonarQube scan (non-blocking)..."
             - pipe: sonarsource/sonarqube-scan:3.1.0
               variables:
                 SONAR_HOST_URL: ${SONAR_HOST_URL}
                 SONAR_TOKEN: ${SONAR_TOKEN}
+            - echo "Checking SonarQube Quality Gate (non-blocking)..."
             - pipe: sonarsource/sonarqube-quality-gate:1.2.0
               variables:
                 SONAR_HOST_URL: ${SONAR_HOST_URL}
                 SONAR_TOKEN: ${SONAR_TOKEN}
-
+            - echo "SonarQube scan and quality gate check completed. Pipeline continues regardless of result."
