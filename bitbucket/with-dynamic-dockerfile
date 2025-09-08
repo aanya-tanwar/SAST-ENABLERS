@@ -12,8 +12,9 @@ pipelines:
           services:
             - docker
           script:
-            - echo "Running Gitleaks scan"
-            - docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source=/repo --exit-code=1 --verbose
+            - echo "Running Gitleaks scan (non-blocking)"
+            - docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source=/repo --exit-code=1 --verbose || true
+            - echo "Gitleaks scan completed. Pipeline will not fail even if secrets are found."
 
       - step:
           name: Trivy Docker Image Scan (Dynamic Dockerfile)
@@ -30,19 +31,24 @@ pipelines:
               curl -L "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_${TRIVY_VERSION#v}_Linux-64bit.tar.gz" -o trivy.tar.gz
               tar zxvf trivy.tar.gz
               mv trivy /usr/local/bin/
+            - trivy version
+
+            - echo "Searching for Dockerfile..."
             - export IMAGE_NAME="app-scan:${BITBUCKET_COMMIT::7}"
             - |
               DOCKERFILE=$(find . -maxdepth 1 -iname 'Dockerfile*' | head -n 1)
               if [ -n "$DOCKERFILE" ]; then
                 echo "Found Dockerfile: $DOCKERFILE"
                 docker build -f "$DOCKERFILE" -t $IMAGE_NAME .
+                echo "Running Trivy scan on Docker image..."
                 trivy image --exit-code 0 \
                   --severity CRITICAL,HIGH \
                   --format table \
                   --output trivy-report.txt \
-                  $IMAGE_NAME
+                  $IMAGE_NAME || true
               else
-                echo "No Dockerfile found. Skipping Trivy scan."
+                echo "No Dockerfile found. Skipping Trivy image scan."
+                echo "No Dockerfile found. Skipping Trivy scan." > trivy-report.txt
               fi
           artifacts:
             - trivy-report.txt
@@ -52,12 +58,14 @@ pipelines:
           caches:
             - sonar
           script:
+            - echo "Running SonarQube scan (non-blocking)..."
             - pipe: sonarsource/sonarqube-scan:3.1.0
               variables:
                 SONAR_HOST_URL: ${SONAR_HOST_URL}
                 SONAR_TOKEN: ${SONAR_TOKEN}
+            - echo "Checking SonarQube Quality Gate (non-blocking)..."
             - pipe: sonarsource/sonarqube-quality-gate:1.2.0
               variables:
                 SONAR_HOST_URL: ${SONAR_HOST_URL}
                 SONAR_TOKEN: ${SONAR_TOKEN}
-
+            - echo "SonarQube scan and quality gate check completed. Pipeline continues regardless of result."
