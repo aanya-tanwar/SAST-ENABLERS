@@ -1,0 +1,63 @@
+definitions:
+  caches:
+    sonar: ~/.sonar
+    trivydb: /root/.cache/trivy
+
+pipelines:
+  pull-requests:
+    "**":
+      - step:
+          name: Gitleaks Secret Scan
+          image: docker:20.10.16
+          services:
+            - docker
+          script:
+            - echo "Running Gitleaks scan"
+            - docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source=/repo --exit-code=1 --verbose
+
+      - step:
+          name: Trivy Docker Image Scan (Dynamic Dockerfile)
+          image: docker:20.10.16
+          services:
+            - docker
+          caches:
+            - trivydb
+          script:
+            - echo "Installing Trivy..."
+            - apk add --no-cache curl tar bash
+            - |
+              TRIVY_VERSION=$(curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | grep tag_name | cut -d '"' -f 4)
+              curl -L "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_${TRIVY_VERSION#v}_Linux-64bit.tar.gz" -o trivy.tar.gz
+              tar zxvf trivy.tar.gz
+              mv trivy /usr/local/bin/
+            - export IMAGE_NAME="app-scan:${BITBUCKET_COMMIT::7}"
+            - |
+              DOCKERFILE=$(find . -maxdepth 1 -iname 'Dockerfile*' | head -n 1)
+              if [ -n "$DOCKERFILE" ]; then
+                echo "Found Dockerfile: $DOCKERFILE"
+                docker build -f "$DOCKERFILE" -t $IMAGE_NAME .
+                trivy image --exit-code 0 \
+                  --severity CRITICAL,HIGH \
+                  --format table \
+                  --output trivy-report.txt \
+                  $IMAGE_NAME
+              else
+                echo "No Dockerfile found. Skipping Trivy scan."
+              fi
+          artifacts:
+            - trivy-report.txt
+
+      - step:
+          name: SonarQube Code Quality Check
+          caches:
+            - sonar
+          script:
+            - pipe: sonarsource/sonarqube-scan:3.1.0
+              variables:
+                SONAR_HOST_URL: ${SONAR_HOST_URL}
+                SONAR_TOKEN: ${SONAR_TOKEN}
+            - pipe: sonarsource/sonarqube-quality-gate:1.2.0
+              variables:
+                SONAR_HOST_URL: ${SONAR_HOST_URL}
+                SONAR_TOKEN: ${SONAR_TOKEN}
+

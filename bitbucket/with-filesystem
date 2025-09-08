@@ -1,0 +1,47 @@
+definitions:
+  caches:
+    sonar: ~/.sonar
+    trivydb: /root/.cache/trivy
+
+pipelines:
+  pull-requests:
+    "**":
+      - step:
+          name: Gitleaks Secret Scan
+          image: docker:20.10.16
+          services:
+            - docker
+          script:
+            - echo "Running Gitleaks scan"
+            - docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source=/repo --exit-code=1 --verbose
+
+      - step:
+          name: Trivy Filesystem Scan
+          image: alpine:3.18
+          caches:
+            - trivydb
+          script:
+            - apk add --no-cache curl tar
+            - |
+              TRIVY_VERSION=$(curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | grep tag_name | cut -d '"' -f 4)
+              curl -L "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_${TRIVY_VERSION#v}_Linux-64bit.tar.gz" -o trivy.tar.gz
+              tar -zxvf trivy.tar.gz
+              mv trivy /usr/local/bin/
+              trivy fs . --format table --output trivy-report.txt
+          artifacts:
+            - trivy-report.txt
+
+      - step:
+          name: SonarQube Analysis
+          caches:
+            - sonar
+          script:
+            - pipe: sonarsource/sonarqube-scan:3.1.0
+              variables:
+                SONAR_HOST_URL: ${SONAR_HOST_URL}
+                SONAR_TOKEN: ${SONAR_TOKEN}
+            - pipe: sonarsource/sonarqube-quality-gate:1.2.0
+              variables:
+                SONAR_HOST_URL: ${SONAR_HOST_URL}
+                SONAR_TOKEN: ${SONAR_TOKEN}
+
